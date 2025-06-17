@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+ultralytics
+opencv-python
+deep_sort_realtime
+aiofiles
+python-multipart
+jinja2
+PyYAML
