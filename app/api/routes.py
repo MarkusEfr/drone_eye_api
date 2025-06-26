@@ -1,8 +1,6 @@
-from fastapi import APIRouter, File, UploadFile
-from fastapi.responses import JSONResponse, Response, FileResponse
-import cv2
-import numpy as np
-import os
+from fastapi import APIRouter, File, UploadFile, Depends
+from fastapi.responses import FileResponse
+
 import uuid
 
 from app.services.detector import Detector
@@ -10,34 +8,41 @@ from app.services.tracker import Tracker
 from app.services.video_processor import process_video
 
 router = APIRouter()
-detector = Detector("yolov8x.pt", 0.5)
-tracker = Tracker()
+
+# Singleton-like cache
+_cached_detector = None
+_cached_tracker = None
 
 
-def read_image_from_upload(file: UploadFile):
-    image_bytes = file.file.read()
-    np_arr = np.frombuffer(image_bytes, np.uint8)
-    image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-    return image
+def get_detector() -> Detector:
+    global _cached_detector
+    if _cached_detector is None:
+        _cached_detector = Detector(
+            model_path="yolov8x.pt",
+            confidence_threshold=0.5,
+            allowed_labels=["car", "truck", "bus", "person"],
+        )
+    return _cached_detector
 
 
-@router.post("/detect/")
-async def detect(file: UploadFile = File(...)):
-    image = read_image_from_upload(file)
-    results = detector.detect(image)
-    return JSONResponse(content={"detections": results})
-
-
-@router.post("/detect/annotated")
-async def detect_annotated(file: UploadFile = File(...)):
-    image = read_image_from_upload(file)
-    frame = detector.detect_and_draw(image)
-    _, encoded_image = cv2.imencode(".jpg", frame)
-    return Response(content=encoded_image.tobytes(), media_type="image/jpeg")
+def get_tracker() -> Tracker:
+    global _cached_tracker
+    if _cached_tracker is None:
+        _cached_tracker = Tracker(
+            max_track_lifetime=60,
+            min_confirmed_frames=2,
+            max_trail_length=30,
+            allowed_labels={"car", "truck", "person"},
+        )
+    return _cached_tracker
 
 
 @router.post("/track/video")
-async def track_video(file: UploadFile = File(...)):
+async def track_video(
+    file: UploadFile = File(...),
+    detector: Detector = Depends(get_detector),
+    tracker: Tracker = Depends(get_tracker),
+):
     filename = file.filename or "input.mp4"
     file_ext = filename.split(".")[-1]
     video_id = str(uuid.uuid4())
@@ -45,9 +50,10 @@ async def track_video(file: UploadFile = File(...)):
     output_path = f"/tmp/{video_id}_out.mp4"
 
     with open(input_path, "wb") as f:
-        f.write(file.file.read())
+        f.write(await file.read())
 
-    process_video(input_path, output_path)
+    process_video(input_path, output_path, detector=detector, tracker=tracker)
+
     return FileResponse(
         output_path, media_type="video/mp4", filename="tracked_output.mp4"
     )
